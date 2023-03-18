@@ -12,6 +12,8 @@
 uint64 MAX_PAGES = 0;
 uint64 FREE_PAGES = 0;
 
+static uint32 ref_count[32768];
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -33,6 +35,10 @@ void kinit()
     initlock(&kmem.lock, "kmem");
     freerange(end, (void *)PHYSTOP);
     MAX_PAGES = FREE_PAGES;
+
+    for (int i = 0; i < MAX_PAGES; i++) {
+        ref_count[i] = 0;
+    }
 }
 
 void freerange(void *pa_start, void *pa_end)
@@ -63,11 +69,17 @@ void kfree(void *pa)
 
     r = (struct run *)pa;
 
-    acquire(&kmem.lock);
-    r->next = kmem.freelist;
-    kmem.freelist = r;
-    FREE_PAGES++;
-    release(&kmem.lock);
+    ref_count[PGNUM(pa)]--;
+    if (ref_count[PGNUM(pa)] == 0) {
+        // Free the page
+        acquire(&kmem.lock);
+        r->next = kmem.freelist;
+        kmem.freelist = r;
+        FREE_PAGES++;
+        release(&kmem.lock);
+    }
+
+    
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -81,6 +93,12 @@ kalloc(void)
 
     acquire(&kmem.lock);
     r = kmem.freelist;
+
+    // Increment reference to page
+    if (r) {
+        ref_count[PGNUM(r)]++;
+    }
+
     if (r)
         kmem.freelist = r->next;
     release(&kmem.lock);
